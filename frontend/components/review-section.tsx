@@ -28,6 +28,7 @@ import {
   AlertCircle,
   Images,
   Search,
+  History,
 } from "lucide-react"
 import { toast } from "sonner"
 import { uploadMessageAsset, sendMessageCampaign, deleteMessageCampaign } from "@/app/actions/messages"
@@ -381,6 +382,8 @@ export function ReviewSection() {
   const [targetLink, setTargetLink] = useState("")
   const [sending, setSending] = useState(false)
   const [search, setSearch] = useState("")
+  // Mobile only: which of the two sections is visible (desktop shows both).
+  const [mobileTab, setMobileTab] = useState<"review" | "recent">("review")
   const bulkMediaRef = useRef<HTMLInputElement>(null)
 
   // Filter accounts by the search box while KEEPING each account's real position
@@ -505,87 +508,180 @@ export function ReviewSection() {
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      {/* Bulk list + media distribute */}
-      <Card>
-        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ListOrdered className="size-4 text-primary" />
-            Bulk list
-          </CardTitle>
-          <GenerateReviewsDialog
-            startAt={nextListNumber}
-            onText={(text) =>
-              setBulkText((prev) => {
-                const base = prev.replace(/\s+$/, "")
-                return base ? `${base}\n${text}` : text
-              })
-            }
-          />
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <Textarea
-            value={bulkText}
-            onChange={(e) => setBulkText(e.target.value)}
-            rows={7}
-            placeholder={"1. Great Work Bro\n#nice bro thanks\n2. to good bro nice\n3. awesome sir\n#you are cool\n#just wow"}
-            className="font-mono text-sm"
-          />
-          <p className="text-xs text-muted-foreground">
-            {
-              "Each number is an account (1 = 1st account, 2 = 2nd, up to your logged-in count). A # line under it is another separate message that same account sends. Apply fills the boxes below."
-            }
-          </p>
-          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-            <Button
-              size="sm"
-              className="w-full gap-1.5 sm:w-auto"
-              onClick={applyBulkList}
-              disabled={accounts.length === 0}
-            >
-              <ListOrdered className="size-4" />
-              Apply text
-            </Button>
-            <input
-              ref={bulkMediaRef}
-              type="file"
-              accept="image/*,video/*"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files && e.target.files.length > 0) distributeBulkMedia(e.target.files)
-                e.target.value = ""
-              }}
-            />
-            <Button
-              size="sm"
-              variant="outline"
-              className="w-full gap-1.5 bg-transparent sm:w-auto"
-              onClick={() => bulkMediaRef.current?.click()}
-              disabled={accounts.length === 0}
-            >
-              <Images className="size-4" />
-              Distribute media (in order)
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+    <div className="flex flex-col gap-4">
+      {/* Mobile: two sections — compose a review, or look at recent campaigns.
+          Desktop: everything on one page with Recent campaigns pinned on top. */}
+      <div className="inline-flex w-full rounded-lg border border-border bg-muted/40 p-1 text-sm md:hidden">
+        <button
+          type="button"
+          onClick={() => setMobileTab("review")}
+          data-testid="review-tab-review"
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 font-medium transition-colors ${
+            mobileTab === "review" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"
+          }`}
+        >
+          <MessageSquare className="size-4" />
+          Review
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobileTab("recent")}
+          data-testid="review-tab-recent"
+          className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 font-medium transition-colors ${
+            mobileTab === "recent" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"
+          }`}
+        >
+          <History className="size-4" />
+          Recent
+          {campaigns.length > 0 ? (
+            <span className="rounded-full bg-primary/15 px-1.5 text-[11px] font-semibold text-primary tabular-nums">
+              {campaigns.length}
+            </span>
+          ) : null}
+        </button>
+      </div>
 
-      {/* Per-account composer */}
-      {accounts.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border py-16 text-center">
-          <div className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
-            <MessageSquare className="size-6" />
-          </div>
-          <div>
-            <p className="font-medium">No logged-in userbots</p>
-            <p className="text-sm text-muted-foreground">Log in some accounts first to compose review messages.</p>
-          </div>
+      {/* ---------------- Recent campaigns (top on desktop) ---------------- */}
+      <section
+        className={`flex flex-col gap-3 ${mobileTab === "recent" ? "flex" : "hidden"} md:flex`}
+        aria-label="Recent campaigns"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight">
+            <History className="size-4 text-primary" />
+            Recent campaigns
+            {campaigns.length > 0 ? (
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground tabular-nums">
+                {campaigns.length}
+              </span>
+            ) : null}
+          </h2>
+          {campaigns.length > 0 ? (
+            <p className="text-xs text-muted-foreground">Live progress per account · newest first</p>
+          ) : null}
         </div>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {/* Search accounts by number (or name/phone). All show by default. */}
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+
+        {campaigns.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border py-10 text-center">
+            <div className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
+              <History className="size-5" />
+            </div>
+            <p className="text-sm font-medium">No campaigns yet</p>
+            <p className="text-xs text-muted-foreground">Send your first review batch and it will show up here.</p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {campaigns.map((c) => (
+              <CampaignCard key={c.id} campaign={c} onChanged={mutate} />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* ---------------- Compose ---------------- */}
+      <section
+        className={`flex flex-col gap-4 ${mobileTab === "review" ? "flex" : "hidden"} md:flex`}
+        aria-label="Compose reviews"
+      >
+        <div className="hidden items-center gap-2 md:flex">
+          <MessageSquare className="size-4 text-primary" />
+          <h2 className="text-base font-semibold tracking-tight">Compose a review batch</h2>
+        </div>
+
+        {/* Step 1 — write the list */}
+        <Card>
+          <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <span className="flex size-6 items-center justify-center rounded-md bg-primary/15 text-xs font-semibold text-primary">
+                1
+              </span>
+              <ListOrdered className="size-4 text-primary" />
+              Bulk list
+            </CardTitle>
+            <GenerateReviewsDialog
+              startAt={nextListNumber}
+              onText={(text) =>
+                setBulkText((prev) => {
+                  const base = prev.replace(/\s+$/, "")
+                  return base ? `${base}\n${text}` : text
+                })
+              }
+            />
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <Textarea
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              rows={7}
+              placeholder={"1. Great Work Bro\n#nice bro thanks\n2. to good bro nice\n3. awesome sir\n#you are cool\n#just wow"}
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground">
+              {
+                "Each number is an account (1 = 1st account, 2 = 2nd, up to your logged-in count). A # line under it is another separate message that same account sends. Apply fills the boxes below."
+              }
+            </p>
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+              <Button
+                size="sm"
+                className="w-full gap-1.5 sm:w-auto"
+                onClick={applyBulkList}
+                disabled={accounts.length === 0}
+              >
+                <ListOrdered className="size-4" />
+                Apply text
+              </Button>
+              <input
+                ref={bulkMediaRef}
+                type="file"
+                accept="image/*,video/*"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) distributeBulkMedia(e.target.files)
+                  e.target.value = ""
+                }}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full gap-1.5 bg-transparent sm:w-auto"
+                onClick={() => bulkMediaRef.current?.click()}
+                disabled={accounts.length === 0}
+              >
+                <Images className="size-4" />
+                Distribute media (in order)
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Step 2 — per-account composer */}
+        {accounts.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border py-16 text-center">
+            <div className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+              <MessageSquare className="size-6" />
+            </div>
+            <div>
+              <p className="font-medium">No logged-in userbots</p>
+              <p className="text-sm text-muted-foreground">Log in some accounts first to compose review messages.</p>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <h3 className="flex items-center gap-2 text-sm font-semibold">
+                <span className="flex size-6 items-center justify-center rounded-md bg-primary/15 text-xs font-semibold text-primary">
+                  2
+                </span>
+                Per-account messages
+              </h3>
+              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                {search ? `${visibleAccounts.length} of ${accounts.length}` : `${accounts.length} accounts`}
+              </span>
+            </div>
+
+            {/* Search accounts by number (or name/phone). All show by default. */}
             <div className="relative w-full sm:max-w-xs">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -607,75 +703,67 @@ export function ReviewSection() {
                 </button>
               ) : null}
             </div>
-            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-              {search ? `${visibleAccounts.length} of ${accounts.length}` : `${accounts.length} accounts`}
-            </span>
-          </div>
 
-          {visibleAccounts.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border py-10 text-center text-sm text-muted-foreground">
-              {`No account matches "${search}".`}
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
-              {visibleAccounts.map(({ position, account }) => (
-                <SlotCard
-                  key={account.id}
-                  position={position}
-                  account={account}
-                  slot={getSlot(position)}
-                  onChange={(next) => setSlot(position, next)}
+            {visibleAccounts.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border py-10 text-center text-sm text-muted-foreground">
+                {`No account matches "${search}".`}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
+                {visibleAccounts.map(({ position, account }) => (
+                  <SlotCard
+                    key={account.id}
+                    position={position}
+                    account={account}
+                    slot={getSlot(position)}
+                    onChange={(next) => setSlot(position, next)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 3 — target + send (stays in reach while scrolling) */}
+        <Card className="sticky bottom-4 border-primary/30 shadow-lg">
+          <CardContent className="flex flex-col gap-3 pt-6">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="review_target" className="flex items-center gap-2">
+                <span className="flex size-6 items-center justify-center rounded-md bg-primary/15 text-xs font-semibold text-primary">
+                  3
+                </span>
+                Target user link
+              </Label>
+              <div className="relative">
+                <Link2 className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="review_target"
+                  value={targetLink}
+                  onChange={(e) => {
+                    const cleaned = stripSpaces(e.target.value)
+                    setTargetLink(cleaned)
+                  }}
+                  placeholder="@username or t.me/username"
+                  className="pl-9"
                 />
-              ))}
+              </div>
             </div>
-          )}
-        </div>
-      )}
-
-      {/* Target + send */}
-      <Card className="sticky bottom-4 border-primary/30 shadow-lg">
-        <CardContent className="flex flex-col gap-3 pt-6">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="review_target">Target user link</Label>
-            <div className="relative">
-              <Link2 className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                id="review_target"
-                value={targetLink}
-                onChange={(e) => {
-                  const cleaned = stripSpaces(e.target.value)
-                  setTargetLink(cleaned)
-                }}
-                placeholder="@username or t.me/username"
-                className="pl-9"
-              />
-            </div>
-          </div>
-          <Button
-            className="w-full gap-2"
-            disabled={sending || accounts.length === 0 || !isTelegramLink(targetLink)}
-            onClick={handleSend}
-          >
-            {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-            {sending ? "Sending..." : "Send to target with userbots"}
-          </Button>
-          <p className="text-xs text-muted-foreground">
-            {
-              "Each account messages the target one-by-one with a safe gap. Text boxes send as separate messages; multiple images in one icon send as a grouped album; a separate icon sends separately."
-            }
-          </p>
-        </CardContent>
-      </Card>
-
-      {/* History */}
-      {campaigns.length > 0 ? (
-        <div className="flex flex-col gap-4">
-          <h2 className="text-sm font-medium text-muted-foreground">Recent campaigns</h2>
-          {campaigns.map((c) => (
-            <CampaignCard key={c.id} campaign={c} onChanged={mutate} />
-          ))}
-        </div>
-      ) : null}
+            <Button
+              className="w-full gap-2"
+              disabled={sending || accounts.length === 0 || !isTelegramLink(targetLink)}
+              onClick={handleSend}
+            >
+              {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+              {sending ? "Sending..." : "Send to target with userbots"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              {
+                "Each account messages the target one-by-one with a safe gap. Text boxes send as separate messages; multiple images in one icon send as a grouped album; a separate icon sends separately."
+              }
+            </p>
+          </CardContent>
+        </Card>
+      </section>
     </div>
   )
 }

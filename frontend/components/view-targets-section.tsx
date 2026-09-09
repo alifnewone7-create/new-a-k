@@ -22,6 +22,7 @@ import { toast } from "sonner"
 import { addViewTarget, updateViewTarget, toggleViewTarget, removeViewTarget } from "@/app/actions/view"
 import type { SpeedMode, ViewTarget } from "@/lib/types"
 import { isTelegramLink, stripSpaces } from "@/lib/validation"
+import { visibleError } from "@/lib/utils"
 
 const MODES: { value: SpeedMode; label: string; desc: string }[] = [
   { value: "slow", label: "Slow", desc: "Biggest gap between userbots — views trickle in over the longest time." },
@@ -175,7 +176,8 @@ function EditDialog({ target, onSaved, userbots }: { target: ViewTarget; onSaved
       fd.set("mode", mode)
       const res = await updateViewTarget(target.id, fd)
       if (res?.error) {
-        toast.error(res.error)
+        const shown = visibleError(res.error)
+        if (shown) toast.error(shown)
         return
       }
       toast.success("View settings updated.")
@@ -275,7 +277,8 @@ export function ViewTargetsSection() {
       fd.set("mode", mode)
       const res = await addViewTarget(fd)
       if (res?.error) {
-        toast.error(res.error)
+        const shown = visibleError(res.error)
+        if (shown) toast.error(shown)
         return
       }
       toast.success("Channel added. Future posts will be auto-viewed.")
@@ -439,10 +442,10 @@ export function ViewTargetsSection() {
                     <span className="font-medium">{timeAgo(t.last_checked_at)}</span>
                   </div>
                 </div>
-                {t.last_error ? (
+                {visibleError(t.last_error) ? (
                   <div className="mt-3 flex items-start gap-1.5 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
                     <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-                    <span className="break-words">{t.last_error}</span>
+                    <span className="break-words">{visibleError(t.last_error)}</span>
                   </div>
                 ) : null}
               </CardContent>

@@ -27,27 +27,8 @@ import {
 } from "@/app/actions/reactions"
 import type { ReactionMode, ReactionTarget } from "@/lib/types"
 import { isTelegramLink, stripSpaces } from "@/lib/validation"
-
-// Common Telegram reaction emojis offered as quick-pick chips. Users can also
-// type any custom emoji that a channel allows.
-const PRESET_EMOJIS = [
-  "👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🎉", "🤩",
-  "🙏", "👌", "🕊", "🤡", "🥱", "😍", "💯", "🤣", "⚡️", "🏆", "💔", "😐",
-  "🍓", "🍾", "💋", "😈", "😴", "😭", "👻", "👀", "🙈", "😇", "🤝", "🤗",
-  "🫡", "💅", "🗿", "🆒", "😘", "😎", "🤷", "😡",
-]
-
-// Extracts ONLY emoji characters from an arbitrary string, dropping letters,
-// digits, punctuation, whitespace and any other non-emoji symbol. This keeps
-// full multi-codepoint emoji intact (variation selectors, ZWJ sequences like
-// 👨‍👩‍👧, skin-tone modifiers, keycaps like 1️⃣, and flags/regional indicators).
-function keepEmojiOnly(input: string): string {
-  if (!input) return ""
-  const emojiPattern =
-    /(\p{RI}\p{RI}|\p{Extended_Pictographic}(\u{FE0F}|\u{20E3})?(\u200D\p{Extended_Pictographic}(\u{FE0F}|\u{20E3})?)*|[0-9#*]\u{FE0F}?\u{20E3})/gu
-  const matches = input.match(emojiPattern)
-  return matches ? matches.join("") : ""
-}
+import { visibleError } from "@/lib/utils"
+import { EmojiKeyboard } from "@/components/emoji-keyboard"
 
 const MODES: { value: ReactionMode; label: string; desc: string }[] = [
   { value: "slow", label: "Slow", desc: "Biggest gap between userbots — reactions trickle in over the longest time." },
@@ -119,18 +100,8 @@ function ConfigFields({
   setReactMax: (n: number) => void
   userbots: number
 }) {
-  const [custom, setCustom] = useState("")
-
   function toggle(emoji: string) {
     setEmojis(emojis.includes(emoji) ? emojis.filter((e) => e !== emoji) : [...emojis, emoji])
-  }
-
-  function addCustom() {
-    // Keep only emoji characters; drop any letters, numbers, spaces, symbols etc.
-    const e = keepEmojiOnly(custom)
-    if (!e) return
-    if (!emojis.includes(e)) setEmojis([...emojis, e])
-    setCustom("")
   }
 
   return (
@@ -142,69 +113,7 @@ function ConfigFields({
           for that post automatically.
         </p>
 
-        {emojis.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5 rounded-md border border-border bg-muted/40 p-2">
-            {emojis.map((e) => (
-              <button
-                key={e}
-                type="button"
-                onClick={() => toggle(e)}
-                className="flex items-center gap-1 rounded-md bg-background px-2 py-1 text-base leading-none shadow-sm"
-                title="Remove"
-              >
-                <span>{e}</span>
-                <X className="size-3 text-muted-foreground" />
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        <div className="flex flex-wrap gap-1.5">
-          {PRESET_EMOJIS.map((e) => {
-            const active = emojis.includes(e)
-            return (
-              <button
-                key={e}
-                type="button"
-                onClick={() => toggle(e)}
-                className={`flex size-9 items-center justify-center rounded-md border text-lg leading-none transition-colors ${
-                  active
-                    ? "border-primary bg-primary/15"
-                    : "border-border bg-background hover:bg-muted"
-                }`}
-                aria-pressed={active}
-              >
-                {e}
-              </button>
-            )
-          })}
-        </div>
-
-        <div className="flex gap-2">
-          <Input
-            value={custom}
-            inputMode="none"
-            onChange={(ev) => setCustom(keepEmojiOnly(ev.target.value))}
-            onPaste={(ev) => {
-              // Block raw paste and only keep the emoji characters from it.
-              ev.preventDefault()
-              const pasted = ev.clipboardData.getData("text")
-              setCustom((prev) => keepEmojiOnly(prev + pasted))
-            }}
-            onKeyDown={(ev) => {
-              if (ev.key === "Enter") {
-                ev.preventDefault()
-                addCustom()
-              }
-            }}
-            placeholder="Add a custom emoji"
-            className="h-9"
-          />
-          <Button type="button" variant="outline" size="sm" onClick={addCustom} className="gap-1">
-            <Plus className="size-4" />
-            Add
-          </Button>
-        </div>
+        <EmojiKeyboard selected={emojis} onToggle={toggle} onClear={() => setEmojis([])} />
       </div>
 
       <Separator />
@@ -322,7 +231,8 @@ function EditDialog({ target, onSaved, userbots }: { target: ReactionTarget; onS
       fd.set("react_max", String(reactMax))
       const res = await updateReactionTarget(target.id, fd)
       if (res?.error) {
-        toast.error(res.error)
+        const shown = visibleError(res.error)
+        if (shown) toast.error(shown)
         return
       }
       toast.success("Reaction settings updated.")
@@ -438,7 +348,8 @@ export function ReactionsSection() {
       fd.set("react_max", String(reactMax))
       const res = await addReactionTarget(fd)
       if (res?.error) {
-        toast.error(res.error)
+        const shown = visibleError(res.error)
+        if (shown) toast.error(shown)
         return
       }
       toast.success("Channel added. Future posts will be auto-reacted to.")
@@ -619,10 +530,10 @@ export function ReactionsSection() {
                     <span className="font-medium">{timeAgo(t.last_post_at)}</span>
                   </div>
                 </div>
-                {t.last_error ? (
+                {visibleError(t.last_error) ? (
                   <div className="mt-3 flex items-start gap-1.5 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
                     <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-                    <span className="break-words">{t.last_error}</span>
+                    <span className="break-words">{visibleError(t.last_error)}</span>
                   </div>
                 ) : null}
               </CardContent>

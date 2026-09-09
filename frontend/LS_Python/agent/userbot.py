@@ -2923,6 +2923,22 @@ async def react_post_scheduled(
 # Profile editing: change one account's name / username / profile photo.
 # ===========================================================================
 
+# SAFETY PACING (anti-freeze). Telegram freezes accounts that rewrite their
+# whole profile in one instant burst (name + username + photo back-to-back), so
+# every step inside a single account's edit is separated by a human-like gap.
+_PROFILE_STEP_DELAY_MIN = float(_os.environ.get("AGENT_PROFILE_STEP_DELAY_MIN", "3"))
+_PROFILE_STEP_DELAY_MAX = float(_os.environ.get("AGENT_PROFILE_STEP_DELAY_MAX", "7"))
+# How many DIFFERENT unique usernames we try per account. If none of them is
+# free (or Telegram rate-limits the check), the username is SKIPPED for this
+# account — the name/photo still apply and the run moves on to the next account
+# instead of burning heavy, flood-prone account.updateUsername calls.
+USERNAME_TRY_LIMIT = max(1, int(_os.environ.get("AGENT_USERNAME_TRY_LIMIT", "2")))
+
+
+async def _profile_step_pause() -> None:
+    await asyncio.sleep(random.uniform(_PROFILE_STEP_DELAY_MIN, _PROFILE_STEP_DELAY_MAX))
+
+
 def _username_candidates(base: str) -> list[str]:
     """
     Build a list of username candidates from a seed. Telegram usernames must be
@@ -3062,6 +3078,7 @@ async def update_profile(
     client: Client = entry["client"]
 
     changed: list[str] = []
+    skipped: list[str] = []
     final_username: Optional[str] = None
 
     # --- name (first / last) ---
@@ -3080,71 +3097,100 @@ async def update_profile(
     # --- username ---
     # IMPORTANT: probe availability with the LIGHT account.checkUsername call and
     # only ever run ONE real set_username (account.updateUsername) on a handle we
-    # already know is free. The old loop called set_username on every candidate
-    # until one stuck; each "occupied" collision was a heavy updateUsername write
-    # that counts toward Telegram's strict username flood limit, which is exactly
-    # why username edits flooded for ~3300s while name/photo (generous limits)
-    # went through fine.
+    # already know is free. Telegram's username limit is the strictest one there
+    # is, and a burst of failed writes is what gets accounts FROZEN — so we try
+    # at most USERNAME_TRY_LIMIT (default 2) unique handles and then SKIP this
+    # account's username entirely instead of pushing further.
+    wants_username = bool(auto_username or (username and username.strip()))
+    if wants_username and changed:
+        # Space the username change away from the name change (anti-freeze).
+        await _profile_step_pause()
+
     if auto_username:
         seed = username_base or " ".join(x for x in [first_name, last_name] if x)
         candidates = _username_candidates(seed)
         chosen: Optional[str] = None
+        tries = 0
         for cand in candidates:
-            if await _username_available(client, cand):
-                chosen = cand
+            if tries >= USERNAME_TRY_LIMIT:
                 break
+            tries += 1
+            try:
+                if await _username_available(client, cand):
+                    chosen = cand
+                    break
+            except FloodWaitError as e:
+                # Never keep hammering a rate-limited username endpoint: skip.
+                skipped.append(f"username (rate limited ~{int(e.seconds)}s)")
+                chosen = None
+                break
+            if tries < USERNAME_TRY_LIMIT:
+                await asyncio.sleep(random.uniform(1.0, 2.5))
+
         if chosen is None:
-            raise UserbotError(
-                f"Could not find a free username from '{seed}' after several tries."
-            )
-        try:
-            await _flood_retry(lambda: client.set_username(chosen), what="setting username")
-            final_username = chosen
-            changed.append("username")
-        except UsernameNotModified:
-            final_username = chosen
-            changed.append("username")
-        except (UsernameOccupied, UsernameInvalid, BadRequest):
-            # Raced with someone else in the tiny window since the check — the
-            # whole job will simply be retried by the worker.
-            raise UserbotError(
-                f"Username @{chosen} was taken just before we could claim it. Retrying."
-            )
+            if not skipped:
+                skipped.append(f"username (no free handle after {tries} tr{'y' if tries == 1 else 'ies'})")
+        else:
+            try:
+                await _flood_retry(lambda: client.set_username(chosen), what="setting username", attempts=1)
+                final_username = chosen
+                changed.append("username")
+            except UsernameNotModified:
+                final_username = chosen
+                changed.append("username")
+            except FloodWaitError as e:
+                skipped.append(f"username (rate limited ~{int(e.seconds)}s)")
+            except (UsernameOccupied, UsernameInvalid, BadRequest):
+                # Raced with someone else in the tiny window since the check.
+                # Skip rather than fail so the run moves on to the next account.
+                skipped.append(f"username (@{chosen} taken)")
     elif username and username.strip():
         uname = username.strip().lstrip("@")
         # Probe first (cheap) so an already-taken handle doesn't burn a heavy,
         # rate-limited updateUsername write.
-        if not await _username_available(client, uname):
+        try:
+            available = await _username_available(client, uname)
+        except FloodWaitError as e:
+            available = False
+            skipped.append(f"username (rate limited ~{int(e.seconds)}s)")
+
+        if skipped:
+            pass  # rate limited above — leave the username unchanged
+        elif not available:
             # Not free — but it may already belong to THIS account. Confirm before
-            # erroring so re-applying the same username is treated as success.
+            # skipping so re-applying the same username is treated as success.
             me = await client.get_me()
             if (me.username or "").lower() == uname.lower():
                 final_username = uname
                 changed.append("username")
             else:
-                raise UserbotError(f"Username @{uname} is already taken or unavailable.")
+                skipped.append(f"username (@{uname} taken)")
         else:
             try:
-                await _flood_retry(lambda: client.set_username(uname), what=f"setting @{uname}")
+                await _flood_retry(lambda: client.set_username(uname), what=f"setting @{uname}", attempts=1)
                 final_username = uname
                 changed.append("username")
             except UsernameNotModified:
                 final_username = uname
                 changed.append("username")  # already set to this value; treat as success
+            except FloodWaitError as e:
+                skipped.append(f"username (rate limited ~{int(e.seconds)}s)")
             except UsernameOccupied:
-                raise UserbotError(f"Username @{uname} is already taken.")
+                skipped.append(f"username (@{uname} taken)")
             except UsernameInvalid:
-                raise UserbotError(f"Username @{uname} is invalid.")
+                skipped.append(f"username (@{uname} invalid)")
             except BadRequest as e:
-                # e.g. USERNAME_PURCHASE_AVAILABLE (reserved for sale on fragment.com).
                 if "PURCHASE_AVAILABLE" in str(e):
-                    raise UserbotError(
-                        f"Username @{uname} is reserved for purchase on fragment.com. Pick another."
-                    )
-                raise UserbotError(f"Could not set @{uname}: {e}")
+                    skipped.append(f"username (@{uname} reserved for purchase)")
+                else:
+                    skipped.append(f"username (@{uname}: {e.__class__.__name__})")
 
     # --- profile photo ---
     if photo_bytes:
+        if changed or skipped:
+            # Never fire the photo write in the same instant as the name/username
+            # change; that back-to-back burst is what triggers freezes.
+            await _profile_step_pause()
         bio = io.BytesIO(photo_bytes)
         bio.name = "profile.jpg"
 
@@ -3155,7 +3201,7 @@ async def update_profile(
         await _flood_retry(_do_photo, what="photo update")
         changed.append("photo")
 
-    return {"changed": changed, "username": final_username}
+    return {"changed": changed, "username": final_username, "skipped": skipped}
 
 
 async def delete_profile_photos(
@@ -3188,6 +3234,9 @@ async def delete_profile_photos(
             if fid:
                 file_ids.append(fid)
     except Exception as e:
+        # A frozen account must be retired, not silently reported as "0 deleted".
+        if is_frozen_error(e):
+            raise FrozenAccountError(str(e))
         # Couldn't even list them - treat as "nothing we can do" rather than a
         # hard error, so one bad account never blocks the batch.
         print(f"[!] could not list profile photos for account {account_id}: "
@@ -3203,13 +3252,23 @@ async def delete_profile_photos(
     BATCH = 50
     for i in range(0, len(file_ids), BATCH):
         batch = file_ids[i : i + BATCH]
+        if i > 0:
+            # Space consecutive delete calls out (anti-freeze safety).
+            await _profile_step_pause()
         try:
             await _flood_retry(
                 lambda b=batch: client.delete_profile_photos(b),
                 what="deleting profile photos",
             )
             deleted += len(batch)
+        except (FrozenAccountError, FloodWaitError):
+            # SAFETY: a frozen account must be retired by the worker, and a long
+            # flood wait must reschedule the job — never swallow these, otherwise
+            # we'd keep hammering Telegram with a doomed account.
+            raise
         except Exception as e:
+            if is_frozen_error(e):
+                raise FrozenAccountError(str(e))
             # Log and continue: a photo may have already been removed elsewhere.
             # We never re-raise here, so a partial failure still counts what worked
             # and keeps the account safely logged in.

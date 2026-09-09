@@ -60,6 +60,21 @@ function compressImage(file: File, maxSize: number, quality: number): Promise<st
   })
 }
 
+// Rendering hundreds of base64 thumbnails is what froze the tab, so we only
+// paint the first few and summarise the rest as "+N".
+const THUMB_LIMIT = 30
+
+// Fisher-Yates shuffle (new array) - used to spread the name/photo pools evenly
+// before the run is split into batches.
+function shuffleArr<T>(arr: T[]): T[] {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
 export function ProfileSection() {
   const { data, mutate } = useSWR<{ accounts: ProfileAccountRow[] }>("/api/profile-accounts", fetcher, {
     refreshInterval: 3000,
@@ -76,8 +91,9 @@ export function ProfileSection() {
   const [photoDataUrls, setPhotoDataUrls] = useState<string[]>([]) // pool of images, randomly assigned per account
   const [noRepeat, setNoRepeat] = useState(false) // use each name/photo once, skip extra accounts
   const [pending, startTransition] = useTransition()
-  // Tracks the one-by-one photo upload so the button can show "Uploading 2/5…".
-  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
+  // Tracks the long-running apply (photo uploads, then account batches) so the
+  // button can show "Uploading 12/500…" / "Queueing 250/500…" instead of freezing.
+  const [progress, setProgress] = useState<{ label: string; done: number; total: number } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const parsedNames = useMemo(
@@ -107,20 +123,27 @@ export function ProfileSection() {
 
     const added: string[] = []
     let rejected = 0
-    for (const file of files) {
+    // Hundreds of images at once used to freeze/crash the tab: we now process
+    // them ONE BY ONE, show progress, and yield to the browser between files.
+    setProgress({ label: "Preparing images", done: 0, total: files.length })
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
       if (!/^image\/(jpeg|jpg|png|webp)$/i.test(file.type) || file.size > 15 * 1024 * 1024) {
         rejected++
-        continue
+      } else {
+        try {
+          // Downscale + re-encode as JPEG on the client. Telegram profile photos are
+          // shown small, so 640px is plenty, and this keeps each payload well under
+          // the Server Action body limit even with several images.
+          added.push(await compressImage(file, 640, 0.85))
+        } catch {
+          rejected++
+        }
       }
-      try {
-        // Downscale + re-encode as JPEG on the client. Telegram profile photos are
-        // shown small, so 640px is plenty, and this keeps each payload well under
-        // the Server Action body limit even with several images.
-        added.push(await compressImage(file, 640, 0.85))
-      } catch {
-        rejected++
-      }
+      setProgress({ label: "Preparing images", done: i + 1, total: files.length })
+      await new Promise((r) => setTimeout(r, 0))
     }
+    setProgress(null)
 
     if (added.length > 0) setPhotoDataUrls((prev) => [...prev, ...added])
     if (rejected > 0) toast.error(`${rejected} file(s) skipped (must be JPEG, PNG or WebP under 15MB).`)
@@ -154,44 +177,73 @@ export function ProfileSection() {
       return
     }
     startTransition(async () => {
-      // Upload photos ONE AT A TIME so each heavy base64 payload travels in its
-      // own small request. Sending them all together in updateProfiles used to
-      // blow past the Server Action body limit and crash with "this page
-      // couldn't load". Here we collect the small asset ids and pass only those.
+      // ---------------------------------------------------------------
+      // 1) Upload photos ONE AT A TIME so each heavy base64 payload
+      //    travels in its own small request (500 images no longer blow
+      //    past the Server Action body limit and crash the page).
+      // ---------------------------------------------------------------
       const photoAssetIds: number[] = []
       if (photoDataUrls.length > 0) {
-        setUploadProgress({ done: 0, total: photoDataUrls.length })
+        setProgress({ label: "Uploading photos", done: 0, total: photoDataUrls.length })
         for (let i = 0; i < photoDataUrls.length; i++) {
           const up = await uploadProfilePhoto(photoDataUrls[i])
           if ("error" in up) {
-            setUploadProgress(null)
-            toast.error(up.error)
+            setProgress(null)
+            toast.error(`${up.error} (stopped after ${i} of ${photoDataUrls.length} photos)`)
             return
           }
           photoAssetIds.push(up.id)
-          setUploadProgress({ done: i + 1, total: photoDataUrls.length })
+          setProgress({ label: "Uploading photos", done: i + 1, total: photoDataUrls.length })
+          // Yield to the browser so the UI keeps painting on huge batches.
+          await new Promise((r) => setTimeout(r, 0))
         }
-        setUploadProgress(null)
       }
 
-      const res = await updateProfiles({
-        accountIds: Array.from(selected),
-        // In name-list mode we send the pool; otherwise the manual first/last.
-        names: nameMode ? parsedNames : undefined,
-        firstName: nameMode ? "" : firstName,
-        lastName: nameMode ? "" : lastName,
-        // In auto mode the agent derives the username from the assigned name.
-        username: autoUsername ? "" : username,
-        autoUsername,
-        // Photos are pre-uploaded above; send only their ids (tiny payload).
-        photoAssetIds,
-        noRepeat,
-      })
-      if (res?.error) {
-        toast.error(res.error)
-        return
+      // ---------------------------------------------------------------
+      // 2) Queue the accounts in SMALL BATCHES, one batch at a time.
+      //    A single 500-account call used to time out / crash; now each
+      //    batch is its own quick request and progress is visible.
+      // ---------------------------------------------------------------
+      const allIds = Array.from(selected)
+      // Shuffle pools HERE (once) in no-repeat mode so batches never reuse the
+      // same name/photo; the server keeps our order (preShuffled).
+      const names = nameMode ? shuffleArr(parsedNames) : []
+      const photos = shuffleArr(photoAssetIds)
+      const cap = noRepeat ? Math.max(names.length, photos.length) : allIds.length
+      const ids = noRepeat && cap > 0 ? allIds.slice(0, cap) : allIds
+
+      const BATCH = 25
+      let queued = 0
+      setProgress({ label: "Queueing accounts", done: 0, total: ids.length })
+      for (let i = 0; i < ids.length; i += BATCH) {
+        const chunk = ids.slice(i, i + BATCH)
+        const res = await updateProfiles({
+          accountIds: chunk,
+          names: nameMode ? (noRepeat ? names.slice(i, i + BATCH) : parsedNames) : undefined,
+          firstName: nameMode ? "" : firstName,
+          lastName: nameMode ? "" : lastName,
+          username: autoUsername ? "" : username,
+          autoUsername,
+          photoAssetIds: noRepeat ? photos.slice(i, i + BATCH) : photoAssetIds,
+          noRepeat,
+          preShuffled: noRepeat,
+          indexOffset: i,
+        })
+        if (res?.error) {
+          setProgress(null)
+          toast.error(`${res.error}${queued > 0 ? ` (${queued} account(s) already queued)` : ""}`)
+          mutate()
+          return
+        }
+        queued += res?.count ?? chunk.length
+        setProgress({ label: "Queueing accounts", done: Math.min(i + BATCH, ids.length), total: ids.length })
+        mutate()
+        await new Promise((r) => setTimeout(r, 0))
       }
-      toast.success(`Queued profile changes for ${res?.count ?? selected.size} account(s).`)
+      setProgress(null)
+      toast.success(
+        `Queued profile changes for ${queued} account(s). The agent applies them one by one, safely paced.`,
+      )
       mutate()
     })
   }
@@ -343,7 +395,7 @@ export function ProfileSection() {
 
             {photoDataUrls.length > 0 ? (
               <div className="flex flex-wrap gap-2">
-                {photoDataUrls.map((url, i) => (
+                {photoDataUrls.slice(0, THUMB_LIMIT).map((url, i) => (
                   <div key={i} className="group relative size-16 overflow-hidden rounded-lg border border-border">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={url || "/placeholder.svg"} alt={`Profile option ${i + 1}`} className="size-full object-cover" />
@@ -357,6 +409,11 @@ export function ProfileSection() {
                     </button>
                   </div>
                 ))}
+                {photoDataUrls.length > THUMB_LIMIT ? (
+                  <div className="flex size-16 items-center justify-center rounded-lg border border-border bg-muted/40 text-xs font-medium text-muted-foreground">
+                    +{photoDataUrls.length - THUMB_LIMIT}
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => fileRef.current?.click()}
@@ -416,9 +473,7 @@ export function ProfileSection() {
             </p>
             <Button onClick={handleApply} disabled={pending || selected.size === 0} className="gap-2">
               {pending ? <Loader2 className="size-4 animate-spin" /> : <UserCog className="size-4" />}
-              {uploadProgress
-                ? `Uploading ${uploadProgress.done}/${uploadProgress.total}…`
-                : "Apply to selected"}
+              {progress ? `${progress.label} ${progress.done}/${progress.total}…` : "Apply to selected"}
             </Button>
           </div>
         </CardContent>

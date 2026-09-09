@@ -40,6 +40,7 @@ export function PrpDeleteSection() {
   const accounts = data?.accounts ?? []
 
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [deleting, startDeleteTransition] = useTransition()
   // Two-step confirmation: step 1 = first warning, step 2 = final "are you sure".
   const [confirmStep, setConfirmStep] = useState<0 | 1 | 2>(0)
@@ -71,13 +72,29 @@ export function PrpDeleteSection() {
   function handleConfirmedDelete() {
     setConfirmStep(0)
     startDeleteTransition(async () => {
-      const res = await deleteProfilePhotos({ accountIds: Array.from(selected) })
-      if (res?.error) {
-        toast.error(res.error)
-        return
+      // Queue in SMALL BATCHES so a 500-account wipe never times out or crashes
+      // the page; progress is shown on the button while it runs.
+      const ids = Array.from(selected)
+      const BATCH = 25
+      let queued = 0
+      setProgress({ done: 0, total: ids.length })
+      for (let i = 0; i < ids.length; i += BATCH) {
+        const chunk = ids.slice(i, i + BATCH)
+        const res = await deleteProfilePhotos({ accountIds: chunk })
+        if (res?.error) {
+          setProgress(null)
+          toast.error(`${res.error}${queued > 0 ? ` (${queued} already queued)` : ""}`)
+          mutate()
+          return
+        }
+        queued += res?.count ?? chunk.length
+        setProgress({ done: Math.min(i + BATCH, ids.length), total: ids.length })
+        mutate()
+        await new Promise((r) => setTimeout(r, 0))
       }
+      setProgress(null)
       toast.success(
-        `Queued photo deletion for ${res?.count ?? selected.size} account(s). Accounts without a photo are skipped automatically.`,
+        `Queued photo deletion for ${queued} account(s). The agent wipes them one by one; accounts without a photo are skipped automatically.`,
       )
       mutate()
     })
@@ -106,8 +123,8 @@ export function PrpDeleteSection() {
             className="shrink-0 gap-2"
           >
             {deleting ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-            Delete photos
-            {selected.size > 0 ? ` (${selected.size})` : ""}
+            {progress ? `Queueing ${progress.done}/${progress.total}…` : "Delete photos"}
+            {!progress && selected.size > 0 ? ` (${selected.size})` : ""}
           </Button>
         </CardContent>
       </Card>

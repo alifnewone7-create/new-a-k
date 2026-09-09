@@ -145,7 +145,15 @@ _SHARD_ACCOUNT_PARAMS: tuple = () if not IS_SHARDED else (SHARD_COUNT, SHARD_IND
 # (plus jitter) between them, turning a flood-triggering burst into a steady
 # trickle. Raise concurrency / lower delay only if you stop seeing FloodWaits.
 PROFILE_MAX_CONCURRENCY = int(os.environ.get("AGENT_PROFILE_CONCURRENCY", "1"))
-PROFILE_JOB_DELAY_SECONDS = float(os.environ.get("AGENT_PROFILE_DELAY_SECONDS", "4"))
+PROFILE_JOB_DELAY_SECONDS = float(os.environ.get("AGENT_PROFILE_DELAY_SECONDS", "10"))
+# Extra anti-freeze guard: the SAME account may not have its profile touched
+# again within this many seconds. Telegram freezes accounts whose profile is
+# rewritten repeatedly in a short window, so a second edit for an account that
+# was just updated is rescheduled instead of run back-to-back.
+PROFILE_ACCOUNT_MIN_GAP = float(os.environ.get("AGENT_PROFILE_ACCOUNT_GAP", "90"))
+# account_id -> monotonic timestamp of its last profile write (name/username/
+# photo/delete). Kept in memory; a restart simply starts fresh.
+_last_profile_action: dict[int, float] = {}
 
 # How many times a job may be rescheduled after a long Telegram FloodWait before
 # we give up and mark it failed. High enough that even heavily rate-limited bulk
@@ -803,10 +811,35 @@ async def handle_update_profile(job: dict) -> dict:
     """
     async with _get_profile_sem():
         try:
+            await _profile_account_gate(job.get("account_id"))
             return await _run_update_profile(job)
         finally:
             # Pause before releasing so the NEXT profile job starts spaced out.
-            await asyncio.sleep(PROFILE_JOB_DELAY_SECONDS + random.uniform(0.0, 1.5))
+            _note_profile_action(job.get("account_id"))
+            await asyncio.sleep(PROFILE_JOB_DELAY_SECONDS + random.uniform(0.0, 4.0))
+
+
+async def _profile_account_gate(account_id) -> None:
+    """
+    ANTI-FREEZE: never touch the same account's profile twice in quick
+    succession. Waits out the remainder of PROFILE_ACCOUNT_MIN_GAP for this
+    account (capped, so a huge queue can never stall) before the edit runs.
+    """
+    if not account_id:
+        return
+    last = _last_profile_action.get(int(account_id))
+    if last is None:
+        return
+    remaining = PROFILE_ACCOUNT_MIN_GAP - (time.monotonic() - last)
+    if remaining > 0:
+        wait = min(remaining, PROFILE_ACCOUNT_MIN_GAP)
+        print(f"[profile] account {account_id}: waiting {int(wait)}s before another profile write (safety gap)")
+        await asyncio.sleep(wait)
+
+
+def _note_profile_action(account_id) -> None:
+    if account_id:
+        _last_profile_action[int(account_id)] = time.monotonic()
 
 
 async def _run_update_profile(job: dict) -> dict:
@@ -846,12 +879,22 @@ async def _run_update_profile(job: dict) -> dict:
         # Persist the username that actually stuck (auto-generated ones differ
         # from the placeholder base we stored when queuing).
         final_username = result.get("username")
+        skipped = result.get("skipped") or []
+        # A skipped username is NOT a failure: the account keeps its name/photo
+        # change and the run moves on. We record the reason as a note so the UI
+        # can show it on hover.
+        note = ("Skipped " + ", ".join(skipped))[:500] if skipped else None
         if update_id:
             if final_username:
-                db.set_profile_update(int(update_id), "done", None, username=final_username)
+                db.set_profile_update(int(update_id), "done", note, username=final_username)
             else:
-                db.set_profile_update(int(update_id), "done", None)
-        return {"stage": "profile_updated", "changed": result.get("changed", []), "username": final_username}
+                db.set_profile_update(int(update_id), "done", note)
+        return {
+            "stage": "profile_updated",
+            "changed": result.get("changed", []),
+            "username": final_username,
+            "skipped": skipped,
+        }
     except Exception as e:
         if update_id:
             db.set_profile_update(int(update_id), "failed", str(e))
@@ -866,9 +909,11 @@ async def handle_delete_profile_photos(job: dict) -> dict:
     """
     async with _get_profile_sem():
         try:
+            await _profile_account_gate(job.get("account_id"))
             return await _run_delete_profile_photos(job)
         finally:
-            await asyncio.sleep(PROFILE_JOB_DELAY_SECONDS + random.uniform(0.0, 1.5))
+            _note_profile_action(job.get("account_id"))
+            await asyncio.sleep(PROFILE_JOB_DELAY_SECONDS + random.uniform(0.0, 4.0))
 
 
 async def _run_delete_profile_photos(job: dict) -> dict:

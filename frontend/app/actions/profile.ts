@@ -44,6 +44,14 @@ export interface ProfileEditInput {
   //    first max(names, photos) accounts change; the rest are skipped. So a
   //    2-name + 2-photo pool over 300 accounts changes exactly 2 accounts.
   noRepeat?: boolean
+  // Set by the UI when it has ALREADY shuffled `names` / `photoAssetIds` and is
+  // sending the accounts in batches. The server then keeps the given order and
+  // pairs entry i with account i (no re-shuffle), so a 500-account run split
+  // into batches still uses every name/photo exactly once in no-repeat mode.
+  preShuffled?: boolean
+  // Index of the first account of this batch within the whole run. Used only to
+  // keep manual-username suffixes unique across batches (base, base1, base2 …).
+  indexOffset?: number
 }
 
 // "Rahim Hasan" -> { first: "Rahim", last: "Hasan" }; "Afiya" -> { first: "Afiya", last: "" }
@@ -189,6 +197,8 @@ export async function updateProfiles(input: ProfileEditInput) {
   }
 
   const noRepeat = Boolean(input.noRepeat)
+  const preShuffled = Boolean(input.preShuffled)
+  const indexOffset = Number.isInteger(input.indexOffset) ? Number(input.indexOffset) : 0
 
   // Decide, per account, which name / photo it receives.
   //
@@ -207,8 +217,10 @@ export async function updateProfiles(input: ProfileEditInput) {
   let targetAccounts = accounts
 
   if (noRepeat && (useNamePool || usesPhotoPool)) {
-    const shuffledNames = shuffle(namePool)
-    const shuffledPhotos = shuffle(photoAssetIds)
+    // When the UI pre-shuffled and batched, keep its order so no name/photo is
+    // used twice across batches.
+    const shuffledNames = preShuffled ? namePool : shuffle(namePool)
+    const shuffledPhotos = preShuffled ? photoAssetIds : shuffle(photoAssetIds)
     const limit = Math.min(accounts.length, Math.max(shuffledNames.length, shuffledPhotos.length))
     targetAccounts = accounts.slice(0, limit)
     assignments = targetAccounts.map((_, i) => {
@@ -244,8 +256,11 @@ export async function updateProfiles(input: ProfileEditInput) {
   }
 
   // Queue one profile_updates row + one update_profile job per TARGET account.
-  await Promise.all(
-    targetAccounts.map((acc, idx) => {
+  // IMPORTANT: this runs in SMALL SEQUENTIAL CHUNKS, never one giant Promise.all.
+  // A 500-account run used to fire 1000+ simultaneous inserts, exhausting the
+  // Postgres pool and crashing the request ("this page couldn't load").
+  const ENQUEUE_CHUNK = 10
+  const tasks = targetAccounts.map((acc, idx) => {
       const assign = assignments[idx]
       const accFirst = assign.first
       const accLast = assign.last
@@ -258,19 +273,24 @@ export async function updateProfiles(input: ProfileEditInput) {
         usernameBase = slugifyName(seedName) || null
       } else if (baseUsername) {
         // Manual username: give each account a distinct suffix when applying to many.
-        username = idx === 0 ? baseUsername : `${baseUsername}${idx}`
+        const globalIdx = indexOffset + idx
+        username = globalIdx === 0 ? baseUsername : `${baseUsername}${globalIdx}`
       }
 
-      return enqueueForAccount(acc.id, {
-        firstName: accFirst,
-        lastName: accLast,
-        username,
-        usernameBase,
-        autoUsername,
-        photoAssetId: assign.photoAssetId,
-      })
-    }),
-  )
+      return () =>
+        enqueueForAccount(acc.id, {
+          firstName: accFirst,
+          lastName: accLast,
+          username,
+          usernameBase,
+          autoUsername,
+          photoAssetId: assign.photoAssetId,
+        })
+  })
+
+  for (let i = 0; i < tasks.length; i += ENQUEUE_CHUNK) {
+    await Promise.all(tasks.slice(i, i + ENQUEUE_CHUNK).map((run) => run()))
+  }
 
   revalidatePath("/")
   return { ok: true, count: targetAccounts.length }
@@ -296,20 +316,24 @@ export async function deleteProfilePhotos(input: { accountIds: number[] }) {
     return { error: "None of the selected accounts are logged in." }
   }
 
-  await Promise.all(
-    accounts.map(async (acc) => {
-      // A profile_updates row so the UI can show per-account progress, reusing the
-      // same status pipeline as name/photo edits.
-      const row = await queryOne<{ id: number }>(
-        `INSERT INTO profile_updates (account_id, status) VALUES ($1, 'pending') RETURNING id`,
-        [acc.id],
-      )
-      await query(
-        `INSERT INTO jobs (type, account_id, payload, status) VALUES ('delete_profile_photos', $1, $2::jsonb, 'queued')`,
-        [acc.id, JSON.stringify({ profile_update_id: row!.id })],
-      )
-    }),
-  )
+  // Small sequential chunks (never one giant Promise.all) so a 500-account wipe
+  // can't exhaust the Postgres pool and crash the request.
+  const CHUNK = 10
+  const queueOne = async (accId: number) => {
+    // A profile_updates row so the UI can show per-account progress, reusing the
+    // same status pipeline as name/photo edits.
+    const row = await queryOne<{ id: number }>(
+      `INSERT INTO profile_updates (account_id, status) VALUES ($1, 'pending') RETURNING id`,
+      [accId],
+    )
+    await query(
+      `INSERT INTO jobs (type, account_id, payload, status) VALUES ('delete_profile_photos', $1, $2::jsonb, 'queued')`,
+      [accId, JSON.stringify({ profile_update_id: row!.id })],
+    )
+  }
+  for (let i = 0; i < accounts.length; i += CHUNK) {
+    await Promise.all(accounts.slice(i, i + CHUNK).map((acc) => queueOne(acc.id)))
+  }
 
   revalidatePath("/")
   return { ok: true, count: accounts.length }

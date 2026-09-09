@@ -138,6 +138,18 @@ def main() -> None:
         return
 
     print(f"[supervisor] launching {SHARD_COUNT} worker shard(s)...", flush=True)
+    # DB connection sanity note: each shard opens its own pool, so the fleet can
+    # use SHARD_COUNT x AGENT_DB_POOL_MAX connections. Warn (don't block) if that
+    # would exceed a typical Postgres max_connections of 100.
+    pool_max = max(1, int(os.environ.get("AGENT_DB_POOL_MAX", "10")))
+    total_conns = SHARD_COUNT * pool_max
+    print(f"[supervisor] DB connections: {SHARD_COUNT} shards x {pool_max} = up to {total_conns}", flush=True)
+    if total_conns > 100:
+        print(
+            f"[supervisor] WARNING: {total_conns} connections may exceed Postgres max_connections. "
+            f"Set AGENT_DB_POOL_MAX={max(2, 60 // SHARD_COUNT)} in .env to stay near 60.",
+            flush=True,
+        )
     shards = [Shard(i, SHARD_COUNT) for i in range(SHARD_COUNT)]
 
     stopping = False
@@ -152,8 +164,9 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
 
-    # Initial staggered launch: bringing 7 processes up at the exact same instant
-    # would create a synchronized burst of logins/joins. A tiny stagger smooths it.
+    # Initial staggered launch: bringing every process up at the exact same
+    # instant would create a synchronized burst of logins/joins. A tiny stagger
+    # smooths it out.
     for s in shards:
         s.start()
         time.sleep(0.5)

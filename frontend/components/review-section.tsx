@@ -33,6 +33,7 @@ import { toast } from "sonner"
 import { uploadMessageAsset, sendMessageCampaign, deleteMessageCampaign } from "@/app/actions/messages"
 import type { MessageCampaignRow, MessageStep, ReviewAccountSlot } from "@/lib/types"
 import { parseReviewList } from "@/lib/review-parser"
+import { GenerateReviewsDialog } from "@/components/generate-reviews-dialog"
 import { isTelegramLink, stripSpaces } from "@/lib/validation"
 
 // ---------------------------------------------------------------------------
@@ -369,6 +370,14 @@ export function ReviewSection() {
 
   const [slots, setSlots] = useState<Record<number, SlotState>>({})
   const [bulkText, setBulkText] = useState("")
+  // Where AI-generated reviews should start numbering: right after the highest
+  // number already in the list, so generating twice never overwrites slot 1.
+  const nextListNumber = useMemo(() => {
+    const nums = Object.keys(parseReviewList(bulkText)).map((n) => Number.parseInt(n, 10))
+    const max = nums.length > 0 ? Math.max(...nums) : 0
+    return max + 1
+  }, [bulkText])
+
   const [targetLink, setTargetLink] = useState("")
   const [sending, setSending] = useState(false)
   const [search, setSearch] = useState("")
@@ -499,11 +508,20 @@ export function ReviewSection() {
     <div className="flex flex-col gap-5">
       {/* Bulk list + media distribute */}
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
           <CardTitle className="flex items-center gap-2 text-base">
             <ListOrdered className="size-4 text-primary" />
             Bulk list
           </CardTitle>
+          <GenerateReviewsDialog
+            startAt={nextListNumber}
+            onText={(text) =>
+              setBulkText((prev) => {
+                const base = prev.replace(/\s+$/, "")
+                return base ? `${base}\n${text}` : text
+              })
+            }
+          />
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <Textarea

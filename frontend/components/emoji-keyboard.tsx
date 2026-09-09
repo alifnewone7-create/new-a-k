@@ -1,8 +1,6 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { EMOJI_CATEGORIES, TELEGRAM_REACTIONS } from "@/lib/emoji-data"
 import {
@@ -16,9 +14,7 @@ import {
   Lightbulb,
   Hash,
   Flag,
-  Search,
   X,
-  Plus,
 } from "lucide-react"
 
 // Extracts ONLY emoji characters from an arbitrary string.
@@ -58,16 +54,8 @@ export function EmojiKeyboard({
   onClear?: () => void
 }) {
   const [tab, setTab] = useState("popular")
-  const [custom, setCustom] = useState("")
 
   const active = useMemo(() => TABS.find((t) => t.id === tab) ?? TABS[0], [tab])
-
-  function addCustom() {
-    const e = keepEmojiOnly(custom)
-    if (!e) return
-    if (!selected.includes(e)) onToggle(e)
-    setCustom("")
-  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -155,33 +143,6 @@ export function EmojiKeyboard({
           </div>
         </div>
 
-        {/* Custom emoji input */}
-        <div className="flex items-center gap-2 border-t border-border bg-muted/20 p-2">
-          <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={custom}
-              onChange={(ev) => setCustom(keepEmojiOnly(ev.target.value))}
-              onPaste={(ev) => {
-                ev.preventDefault()
-                const pasted = ev.clipboardData.getData("text")
-                setCustom((prev) => keepEmojiOnly(prev + pasted))
-              }}
-              onKeyDown={(ev) => {
-                if (ev.key === "Enter") {
-                  ev.preventDefault()
-                  addCustom()
-                }
-              }}
-              placeholder="Paste or type any emoji"
-              className="h-9 pl-8 text-base"
-            />
-          </div>
-          <Button type="button" variant="outline" size="sm" onClick={addCustom} className="h-9 shrink-0 gap-1">
-            <Plus className="size-4" />
-            Add
-          </Button>
-        </div>
       </div>
     </div>
   )

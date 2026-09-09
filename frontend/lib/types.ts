@@ -310,7 +310,13 @@ export interface ProfileAccountRow {
   label: string | null
   phone_number: string
   status: AccountStatus
+  // Last name/username/photo EDIT (Profile section only).
   profile_status: ProfileUpdateStatus | null
   profile_error: string | null
   profile_updated_at: string | null
+  // Last photo WIPE (Prp Delete section only) - tracked separately so a profile
+  // update never shows as "Deleted" in Prp Delete.
+  delete_status: ProfileUpdateStatus | null
+  delete_error: string | null
+  delete_updated_at: string | null
 }

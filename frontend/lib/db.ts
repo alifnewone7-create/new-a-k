@@ -244,6 +244,21 @@ CREATE TABLE IF NOT EXISTS profile_updates (
 CREATE INDEX IF NOT EXISTS profile_updates_account_idx ON profile_updates (account_id);
 CREATE INDEX IF NOT EXISTS profile_updates_created_idx ON profile_updates (created_at DESC);
 
+-- What kind of profile job this row belongs to: 'update' (name/username/photo
+-- edit from the Profile section) or 'delete' (photo wipe from Prp Delete). The
+-- two sections show their OWN last status, so updating a profile no longer makes
+-- Prp Delete claim the photos were "Deleted".
+ALTER TABLE profile_updates ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'update';
+-- Backfill historic rows: a delete job never carried a name/username/photo.
+UPDATE profile_updates
+   SET kind = 'delete'
+ WHERE kind = 'update'
+   AND first_name IS NULL
+   AND last_name IS NULL
+   AND username IS NULL
+   AND photo_asset_id IS NULL;
+CREATE INDEX IF NOT EXISTS profile_updates_account_kind_idx ON profile_updates (account_id, kind, id DESC);
+
 -- Incoming Telegram messages surfaced per userbot account ----------------------
 -- Only messages from Telegram's official service account (id 777000, "Telegram")
 -- are stored — these carry login codes and other system notices. They are

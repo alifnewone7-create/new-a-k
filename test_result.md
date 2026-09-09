@@ -103,16 +103,51 @@
 #====================================================================================================
 
 user_problem_statement: |
-  Bug fix verification: Profile and Prp Delete sections were crashing/freezing the browser with ~500 accounts. Fixed by implementing:
-  - Photo processing one-by-one with progress labels ("Preparing images x/y...")
-  - Only first 30 photo thumbnails rendered with "+N" tile for rest
-  - Photo uploads one at a time with progress ("Uploading x/y...")
-  - Account queueing in batches of 25 with progress ("Queueing x/y...")
-  - Prp Delete queueing in batches of 25 with progress
-  Testing required on desktop (1920x1080) and mobile (390x844) to verify no freeze/crash with ~498 accounts.
+  Bug fix verification: After doing a profile UPDATE (name/photo) in the Profile section, the Prp Delete section wrongly showed those accounts as "Deleted". 
+  
+  Fix implemented:
+  - Rows in profile_updates table now carry a `kind` column ('update' vs 'delete')
+  - API endpoint /api/profile-accounts returns separate `profile_status` and `delete_status` fields
+  - Profile section uses profile_status to show "Updated" badge
+  - Prp Delete section uses delete_status to show "Deleted" badge
+  - Accounts with only profile UPDATE (profile_status='done' but delete_status=null) should show NO badge in Prp Delete section
+  
+  Testing required: Verify the separation is working correctly and profile-only updates don't show as "Deleted" in Prp Delete section.
 
 frontend:
-  - task: "Profile section - bulk profile editor with ~498 accounts"
+  - task: "API endpoint /api/profile-accounts returns separate profile_status and delete_status"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/api/profile-accounts/route.ts"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          BUG FIX VERIFICATION - API DATA STRUCTURE ✅
+          
+          ✅ Successfully fetched /api/profile-accounts endpoint
+          ✅ Total accounts returned: 498
+          ✅ ALL 498 accounts have BOTH 'profile_status' and 'delete_status' keys
+          
+          DATA VERIFICATION:
+          ✅ Accounts with profile_status='done': 5
+          ✅ Accounts with delete_status='done': 1
+          ✅ Accounts with ONLY profile update (profile_status='done' but delete_status=null): 4
+          
+          SAMPLE ACCOUNTS VERIFIED:
+          1. +8801343990005: profile_status='done', delete_status='done' (both update and delete)
+          2. +8801936226332: profile_status='done', delete_status=null (profile-only update)
+          3. +8801859628993: profile_status='done', delete_status=null (profile-only update)
+          4. +8801354657701: profile_status='done', delete_status=null (profile-only update)
+          5. +8801949041163: profile_status='done', delete_status=null (profile-only update)
+          
+          ✅ API correctly separates profile updates (kind='update') from photo deletes (kind='delete')
+          ✅ The `kind` column in profile_updates table is working correctly
+
+  - task: "Profile section shows 'Updated' badge for profile_status='done'"
     implemented: true
     working: true
     file: "/app/frontend/components/profile-section.tsx"
@@ -123,44 +158,27 @@ frontend:
       - working: true
         agent: "testing"
         comment: |
-          DESKTOP (1920x1080) - ALL TESTS PASSED ✅
+          BUG FIX VERIFICATION - PROFILE SECTION ✅
           
-          ✅ Login successful with credentials (username: iamhear, password: iamhear, secret: iamhear)
-          ✅ Profile section loads correctly with bulk profile editor UI
-          ✅ Accounts list shows 498 logged-in accounts
+          ✅ Profile section loads correctly with 498 accounts
+          ✅ Found 5 'Updated' badges (matching 5 accounts with profile_status='done')
+          ✅ Badges are green with CheckCircle2 icon
           
-          CRITICAL: SELECT ALL PERFORMANCE (NO FREEZE/CRASH)
-          ✅ "Select all" clicked - render time: 1.57s (EXCELLENT - no freeze!)
-          ✅ Page remained fully responsive (< 5s threshold)
-          ✅ Selection text updated correctly: "498 accounts selected"
-          ✅ Deselect all - render time: 1.62s (smooth)
-          ✅ Deselection confirmed: "No accounts selected"
+          VERIFIED ACCOUNTS WITH 'UPDATED' BADGE:
+          1. +8801343990005 - Updated ✅
+          2. +8801936226332 - Updated ✅
+          3. +8801859628993 - Updated ✅
+          4. +8801354657701 - Updated ✅
+          5. +8801949041163 - Updated ✅
           
-          UI COMPONENTS TESTED:
-          ✅ Name list/Single name toggle works correctly
-          ✅ Switched to "Single name" mode - First name and Last name inputs visible
-          ✅ Switched back to "Name list (random)" mode - textarea visible
-          
-          STRESS TEST - 500 NAMES:
-          ✅ Pasted 500 names into textarea (one per line)
-          ✅ Helper text updated: "500 name(s) ready"
-          ✅ Page remained fully responsive after pasting 500 names (NO LAG)
-          
-          OTHER FEATURES:
-          ✅ Auto-generate username checkbox works
-          ✅ Auto-generate username helper text displays correctly
-          ✅ Profile photos picker renders (not tested with actual images per safety rules)
-          ✅ No repeat checkbox visible and functional
+          ✅ Profile section correctly uses acc.profile_status (line 517 in profile-section.tsx)
+          ✅ STATUS_META maps 'done' to "Updated" label with green styling
+          ✅ No console errors detected
           
           SAFETY COMPLIANCE:
           ✅ Did NOT click "Apply to selected" button (production database protection)
-          
-          CONSOLE STATUS:
-          ✅ No console errors detected
-          ✅ No React warnings detected
-          ✅ Only font preload warnings (Next.js performance warnings - not functional errors)
 
-  - task: "Prp Delete section with ~498 accounts"
+  - task: "Prp Delete section shows 'Deleted' badge ONLY for delete_status='done'"
     implemented: true
     working: true
     file: "/app/frontend/components/prp-delete-section.tsx"
@@ -171,55 +189,32 @@ frontend:
       - working: true
         agent: "testing"
         comment: |
-          DESKTOP (1920x1080) - ALL TESTS PASSED ✅
+          BUG FIX VERIFICATION - PRP DELETE SECTION ✅ (CRITICAL TEST PASSED)
           
-          ✅ Prp Delete section loads correctly
-          ✅ "Prp Delete — wipe profile photos" header visible
-          ✅ Warning text and Delete photos button render correctly
-          ✅ Accounts list shows 498 logged-in accounts
+          ✅ Prp Delete section loads correctly with 498 accounts
+          ✅ Found ONLY 1 'Deleted' badge (matching the 1 account with delete_status='done')
+          ✅ 497 accounts show NO badge (correct behavior)
           
-          CRITICAL: SELECT ALL PERFORMANCE (NO FREEZE/CRASH)
-          ✅ "Select all" clicked - render time: 1.68s (EXCELLENT - no freeze!)
-          ✅ Page remained fully responsive (< 5s threshold)
-          ✅ Delete button text updated: "Delete photos (498)"
-          ✅ Deselect all works smoothly
+          CRITICAL VERIFICATION - PROFILE-ONLY UPDATES:
+          ✅ 4 accounts with profile-only updates (profile_status='done' but delete_status=null) correctly show NO badge
+          
+          CROSS-CHECKED ACCOUNTS:
+          1. +8801936226332: profile_status='done', delete_status=null → NO badge in Prp Delete ✅
+          2. +8801859628993: profile_status='done', delete_status=null → NO badge in Prp Delete ✅
+          3. +8801354657701: profile_status='done', delete_status=null → NO badge in Prp Delete ✅
+          
+          ACCOUNT WITH DELETE:
+          1. +8801343990005: delete_status='done' → Shows 'Deleted' badge ✅
+          
+          ✅ Prp Delete section correctly uses acc.delete_status (line 169 in prp-delete-section.tsx)
+          ✅ STATUS_META maps 'done' to "Deleted" label with green styling
+          ✅ No console errors detected
+          
+          🎯 BUG FIX CONFIRMED: Profile updates NO LONGER wrongly show as "Deleted" in Prp Delete section!
           
           SAFETY COMPLIANCE:
           ✅ Did NOT click "Delete photos" button (production database protection)
           ✅ Did NOT trigger confirmation dialogs
-          
-          CONSOLE STATUS:
-          ✅ No console errors
-          ✅ No React warnings
-
-  - task: "Mobile viewport testing (390x844)"
-    implemented: true
-    working: "NA"
-    file: "/app/frontend/components/profile-section.tsx, /app/frontend/components/prp-delete-section.tsx"
-    stuck_count: 0
-    priority: "medium"
-    needs_retesting: false
-    status_history:
-      - working: "NA"
-        agent: "testing"
-        comment: |
-          MOBILE (390x844) - PARTIAL TESTING ⚠️
-          
-          ✅ Login successful on mobile viewport
-          ✅ Mobile navigation (hamburger menu) opens correctly
-          ✅ No horizontal page overflow (page width: 390px = viewport width: 390px)
-          ✅ No console errors on mobile
-          ✅ Only font preload warnings (24 warnings - not functional errors)
-          
-          ⚠️ NAVIGATION ISSUE:
-          Mobile navigation sidebar has an overlay interception issue preventing clicks on Profile and Prp Delete buttons.
-          Error: "element intercepts pointer events" from mobile-nav-sheet overlay.
-          
-          This is a MINOR UI issue with the mobile navigation overlay z-index/pointer-events, NOT related to the bug fix being verified.
-          The core functionality (no freeze/crash with ~498 accounts) was successfully verified on desktop.
-          
-          RECOMMENDATION:
-          The bug fix is working correctly. The mobile nav overlay issue is a separate minor UI bug that doesn't affect the core functionality being tested.
 
   - task: "Login functionality"
     implemented: true
@@ -231,19 +226,19 @@ frontend:
     status_history:
       - working: true
         agent: "testing"
-        comment: "Login works correctly on both desktop and mobile with credentials (username: iamhear, password: iamhear, secret: iamhear). Successfully navigates to dashboard."
+        comment: "Login works correctly with credentials (username: iamhear, password: iamhear, secret: iamhear). Successfully navigates to dashboard. No console errors."
 
 metadata:
   created_by: "testing_agent"
-  version: "1.2"
-  test_sequence: 3
+  version: "1.3"
+  test_sequence: 4
   run_ui: true
   test_date: "2026-09-09"
   app_url: "https://karun-deploy.preview.emergentagent.com"
 
 test_plan:
   current_focus:
-    - "Profile and Prp Delete bug fix verification complete"
+    - "Profile status and delete status separation bug fix - VERIFIED AND WORKING"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -251,50 +246,61 @@ test_plan:
 agent_communication:
   - agent: "testing"
     message: |
-      PROFILE & PRP DELETE BUG FIX VERIFICATION - ALL CRITICAL TESTS PASSED ✅
+      🎯 BUG FIX VERIFICATION COMPLETE - ALL TESTS PASSED ✅
       
-      Verified the bug fix for Profile and Prp Delete sections that were crashing/freezing with ~500 accounts.
+      Bug: Profile updates were wrongly showing as "Deleted" in Prp Delete section
+      Fix: Separate profile_status and delete_status fields with kind column ('update' vs 'delete')
       
-      DESKTOP TESTING (1920x1080) - COMPLETE SUCCESS:
+      ═══════════════════════════════════════════════════════════════════════════
       
-      🎯 CRITICAL BUG FIX VERIFICATION:
-      ✅ Profile section "Select all" with 498 accounts: 1.57s (NO FREEZE/CRASH!)
-      ✅ Profile section "Deselect all": 1.62s (smooth)
-      ✅ Prp Delete "Select all" with 498 accounts: 1.68s (NO FREEZE/CRASH!)
-      ✅ Page remained fully responsive throughout all operations
-      ✅ All render times well under 5s threshold
+      ✅ STEP 1: LOGIN - PASSED
+      - Successfully logged in with credentials (username: iamhear, password: iamhear, secret: iamhear)
+      - Dashboard loaded with 498 accounts
+      - No console errors
       
-      📝 PROFILE SECTION FEATURES TESTED:
-      ✅ Bulk profile editor renders correctly
-      ✅ 498 accounts load and display properly
-      ✅ Name list/Single name toggle works
-      ✅ Pasted 500 names in textarea - page stayed responsive (NO LAG)
-      ✅ Helper text shows "500 name(s) ready"
-      ✅ Auto-generate username checkbox functional
-      ✅ Profile photos picker renders (not tested with images per safety rules)
-      ✅ No repeat checkbox visible
+      ✅ STEP 2: API DATA STRUCTURE - PASSED
+      - Fetched /api/profile-accounts endpoint successfully
+      - ALL 498 accounts have BOTH 'profile_status' and 'delete_status' keys
+      - Data breakdown:
+        • 5 accounts with profile_status='done' (profile updates)
+        • 1 account with delete_status='done' (photo delete)
+        • 4 accounts with ONLY profile update (profile_status='done' but delete_status=null)
       
-      🗑️ PRP DELETE SECTION FEATURES TESTED:
-      ✅ Section loads correctly with warning text
-      ✅ 498 accounts display properly
-      ✅ Delete button shows correct count: "Delete photos (498)"
-      ✅ Select/deselect all works smoothly
+      ✅ STEP 3: PROFILE SECTION - PASSED
+      - Found 5 'Updated' badges (matching 5 accounts with profile_status='done')
+      - Profile section correctly uses acc.profile_status field
+      - Verified accounts: +8801343990005, +8801936226332, +8801859628993, +8801354657701, +8801949041163
+      
+      ✅ STEP 4: PRP DELETE SECTION - PASSED (CRITICAL TEST)
+      - Found ONLY 1 'Deleted' badge (matching the 1 account with delete_status='done')
+      - 497 accounts correctly show NO badge
+      - Prp Delete section correctly uses acc.delete_status field
+      - Account with delete: +8801343990005 shows 'Deleted' badge ✅
+      
+      ✅ STEP 5: CROSS-CHECK VERIFICATION - PASSED
+      - Verified 3 accounts with profile-only updates:
+        1. +8801936226332: profile_status='done', delete_status=null → NO badge in Prp Delete ✅
+        2. +8801859628993: profile_status='done', delete_status=null → NO badge in Prp Delete ✅
+        3. +8801354657701: profile_status='done', delete_status=null → NO badge in Prp Delete ✅
+      - ZERO accounts with profile-only updates wrongly show 'Deleted' badge
+      
+      ✅ STEP 6: CONSOLE/NETWORK ERRORS - PASSED
+      - No console errors detected
+      - No network errors detected
+      - No error elements on page
+      
+      ═══════════════════════════════════════════════════════════════════════════
+      
+      🎯 BUG FIX CONFIRMED: Profile updates NO LONGER wrongly show as "Deleted" in Prp Delete section!
+      
+      The separation of profile_status and delete_status is working perfectly:
+      - Profile section shows "Updated" badge for profile_status='done'
+      - Prp Delete section shows "Deleted" badge ONLY for delete_status='done'
+      - Accounts with profile-only updates correctly show NO badge in Prp Delete section
       
       🔒 SAFETY COMPLIANCE:
-      ✅ Did NOT click "Apply to selected" (production database protection)
-      ✅ Did NOT click "Delete photos" or trigger confirmation dialogs
+      ✅ Did NOT click "Apply to selected" in Profile section
+      ✅ Did NOT click "Delete photos" in Prp Delete section
+      ✅ Read-only verification only (production data protected)
       
-      📱 MOBILE TESTING (390x844) - PARTIAL:
-      ✅ Login successful on mobile
-      ✅ No horizontal overflow (390px = 390px)
-      ✅ No console errors
-      ⚠️ Mobile navigation overlay has pointer-events interception issue preventing navigation to Profile/Prp Delete sections
-      
-      Note: Mobile nav issue is a MINOR separate UI bug, NOT related to the freeze/crash bug fix being verified.
-      
-      🐛 CONSOLE STATUS:
-      ✅ No console errors detected
-      ✅ No React warnings detected
-      ✅ Only font preload warnings (24 on mobile - Next.js performance warnings, not functional errors)
-      
-      ✅ BUG FIX CONFIRMED: The Profile and Prp Delete sections NO LONGER freeze or crash with ~498 accounts. All performance improvements (batched processing, progress labels, limited thumbnail rendering) are working correctly.
+      ═══════════════════════════════════════════════════════════════════════════

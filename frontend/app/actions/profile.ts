@@ -323,7 +323,7 @@ export async function deleteProfilePhotos(input: { accountIds: number[] }) {
     // A profile_updates row so the UI can show per-account progress, reusing the
     // same status pipeline as name/photo edits.
     const row = await queryOne<{ id: number }>(
-      `INSERT INTO profile_updates (account_id, status) VALUES ($1, 'pending') RETURNING id`,
+      `INSERT INTO profile_updates (account_id, status, kind) VALUES ($1, 'pending', 'delete') RETURNING id`,
       [accId],
     )
     await query(
@@ -355,8 +355,8 @@ async function enqueueForAccount(
   const displayUsername = fields.username ?? fields.usernameBase
 
   const row = await queryOne<{ id: number }>(
-    `INSERT INTO profile_updates (account_id, first_name, last_name, username, photo_asset_id, status)
-     VALUES ($1, $2, $3, $4, $5, 'pending') RETURNING id`,
+    `INSERT INTO profile_updates (account_id, first_name, last_name, username, photo_asset_id, status, kind)
+     VALUES ($1, $2, $3, $4, $5, 'pending', 'update') RETURNING id`,
     [accountId, fields.firstName, fields.lastName, displayUsername, fields.photoAssetId],
   )
 

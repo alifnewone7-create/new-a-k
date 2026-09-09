@@ -164,7 +164,9 @@ export function PrpDeleteSection() {
           <div className="grid gap-3 sm:grid-cols-2">
             {accounts.map((acc) => {
               const isSelected = selected.has(acc.id)
-              const meta = acc.profile_status ? STATUS_META[acc.profile_status] : null
+              // Only the photo-DELETE status belongs here; a Profile-section
+              // edit must not show up as "Deleted".
+              const meta = acc.delete_status ? STATUS_META[acc.delete_status] : null
               const Icon = meta?.icon
               return (
                 <button
@@ -185,7 +187,7 @@ export function PrpDeleteSection() {
                     {acc.label ? <p className="truncate text-xs text-muted-foreground">{acc.phone_number}</p> : null}
                   </div>
                   {meta && Icon ? (
-                    <Badge className={`gap-1 ${meta.className}`} title={acc.profile_error ?? undefined}>
+                    <Badge className={`gap-1 ${meta.className}`} title={acc.delete_error ?? undefined}>
                       <Icon className="size-3" />
                       {meta.label}
                     </Badge>
